@@ -12,6 +12,11 @@ function timeAgo(ts) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+function shorten(str, max) {
+  if (!str) return "";
+  return str.length > max ? str.slice(0, max - 1).trimEnd() + "…" : str;
+}
+
 function render(snapshots) {
   const list = document.getElementById("list");
   list.innerHTML = "";
@@ -28,9 +33,26 @@ function render(snapshots) {
 
     const head = document.createElement("div");
     head.className = "snap-head";
-    head.innerHTML =
-      `<span class="badge">${snap.type === "home" ? "Home" : "Sidebar"}</span>` +
-      `<span class="when">${timeAgo(snap.capturedAt)} · ${snap.items.length} videos</span>`;
+
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = snap.type === "home" ? "Home" : "Sidebar";
+    head.appendChild(badge);
+
+    // For sidebar snapshots, show which video these recommendations came from.
+    if (snap.type === "watch" && snap.context) {
+      const ctx = document.createElement("span");
+      ctx.className = "context";
+      ctx.textContent = shorten(snap.context, 60);
+      ctx.title = snap.context; // full title on hover
+      head.appendChild(ctx);
+    }
+
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = `${timeAgo(snap.capturedAt)} · ${snap.items.length} videos`;
+    head.appendChild(when);
+
     head.addEventListener("click", () => wrap.classList.toggle("collapsed"));
 
     const ul = document.createElement("ul");

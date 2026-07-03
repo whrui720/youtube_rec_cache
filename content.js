@@ -7,41 +7,101 @@
 
 const MAX_SNAPSHOTS = 10;
 const STORAGE_KEY = "ytRecSnapshots";
+const DEBUG = true; // logs capture activity to the page console (F12) for troubleshooting
 
 // ---- Scrapers -------------------------------------------------------------
 // Each returns an array of { title, url, channel } or [] if nothing found.
-// Selectors are the fragile part: if YouTube changes its markup, fix these.
+//
+// Rather than target YouTube's ever-changing element IDs/classes, we anchor on
+// the one thing that stays stable: recommendation entries are <a> tags whose
+// href points at "/watch?v=...". We pull the title from whatever attribute or
+// child element happens to hold it. This survives most YouTube redesigns.
+
+// Read a title from an anchor. Returns { title, clean } where `clean` means it
+// came from a real title element (not a fallback). Every video card has TWO
+// /watch links — a thumbnail link whose only text is the duration overlay or a
+// "50 videos" playlist badge, and the actual title link. We must read from the
+// title-holding elements and ignore the thumbnail's badge text.
+function readTitle(a) {
+  let title = (
+    (a.getAttribute("title") || "").trim() ||
+    (a.querySelector("#video-title, h3, yt-formatted-string")?.textContent || "").trim()
+  ).replace(/\s+/g, " ");
+
+  if (title) {
+    // Guard against a stray badge sneaking in: reject a pure duration ("10:23",
+    // "1:04:33") or a bare count ("50 videos").
+    if (/^[\d:]+$/.test(title) || /^\d+\s+videos?$/i.test(title)) return { title: "", clean: false };
+    return { title, clean: true };
+  }
+
+  // Last resort: aria-label (often "Title by Channel, 1.2M views, 10 minutes").
+  // Lower priority so a clean title always wins over this messier form.
+  const aria = (a.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  return { title: aria, clean: false };
+}
+
+function extractVideoLinks(root) {
+  const byHref = new Map(); // href -> { url, title, channel, clean }
+
+  root.querySelectorAll('a[href*="/watch?v="]').forEach((a) => {
+    const href = a.href;
+    if (!href) return;
+
+    const { title, clean } = readTitle(a);
+    if (!title) return;
+
+    // Keep the best title we find for each URL: a clean title beats a fallback,
+    // and we don't overwrite an existing clean one.
+    const existing = byHref.get(href);
+    if (existing && (existing.clean || !clean)) return;
+
+    const card = a.closest(
+      "ytd-rich-item-renderer, yt-lockup-view-model, ytd-compact-video-renderer, ytd-video-renderer"
+    );
+    const channel =
+      card
+        ?.querySelector(
+          "ytd-channel-name #text, .yt-content-metadata-view-model-wiz__metadata-text"
+        )
+        ?.textContent?.trim() || "";
+
+    byHref.set(href, { url: href, title, channel, clean });
+  });
+
+  return [...byHref.values()].map(({ url, title, channel }) => ({ url, title, channel }));
+}
 
 function scrapeHomeFeed() {
-  const items = [];
-  // Home feed grid items
-  document
-    .querySelectorAll("ytd-rich-item-renderer a#video-title-link, ytd-rich-item-renderer a#video-title")
-    .forEach((a) => {
-      const title = a.getAttribute("title") || a.textContent.trim();
-      const href = a.href;
-      if (title && href) {
-        const channel =
-          a.closest("ytd-rich-item-renderer")?.querySelector("ytd-channel-name #text")?.textContent?.trim() || "";
-        items.push({ title, url: href, channel });
-      }
-    });
-  return items;
+  const root =
+    document.querySelector("ytd-rich-grid-renderer") ||
+    document.querySelector("#primary #contents") ||
+    document;
+  return extractVideoLinks(root);
 }
 
 function scrapeWatchSidebar() {
-  const items = [];
-  // Related/recommended videos in the right rail of a watch page
-  document
-    .querySelectorAll("ytd-watch-next-secondary-results-renderer a#video-title, yt-lockup-view-model a.yt-lockup-metadata-view-model__title")
-    .forEach((a) => {
-      const title = a.getAttribute("title") || a.textContent.trim();
-      const href = a.href;
-      if (title && href) {
-        items.push({ title, url: href, channel: "" });
-      }
-    });
-  return items;
+  const root =
+    document.querySelector("ytd-watch-next-secondary-results-renderer") ||
+    document.querySelector("#secondary") ||
+    document.querySelector("#related") ||
+    document;
+  return extractVideoLinks(root);
+}
+
+// Title of the video currently playing on a /watch page, used to label the
+// snapshot ("Sidebar: <title>") so you can tell whose recommendations these are.
+function currentVideoTitle() {
+  const el = document.querySelector(
+    "ytd-watch-metadata h1 yt-formatted-string, h1.ytd-watch-metadata, #above-the-fold #title h1"
+  );
+  const t = el?.textContent?.trim();
+  if (t) return t;
+  // Fallback: the tab title, minus the notification count and " - YouTube".
+  return (document.title || "")
+    .replace(/^\(\d+\)\s*/, "")
+    .replace(/\s*-\s*YouTube\s*$/, "")
+    .trim();
 }
 
 function detectPageType() {
@@ -58,7 +118,10 @@ async function saveSnapshot() {
   if (!type) return;
 
   const items = type === "home" ? scrapeHomeFeed() : scrapeWatchSidebar();
-  if (items.length === 0) return; // nothing rendered yet; a retry will catch it
+  if (items.length === 0) {
+    if (DEBUG) console.debug("[yt-rec-cache] %s page: 0 items scraped (not ready yet or selectors broken)", type);
+    return; // nothing rendered yet; a retry will catch it
+  }
 
   // De-dupe within this snapshot, cap the per-page list so storage stays small
   const seen = new Set();
@@ -76,6 +139,7 @@ async function saveSnapshot() {
     capturedAt: Date.now(),
     items: deduped,
   };
+  if (type === "watch") snapshot.context = currentVideoTitle();
 
   const data = await chrome.storage.local.get(STORAGE_KEY);
   const list = data[STORAGE_KEY] || [];
@@ -90,6 +154,7 @@ async function saveSnapshot() {
 
   const trimmed = list.slice(0, MAX_SNAPSHOTS);
   await chrome.storage.local.set({ [STORAGE_KEY]: trimmed });
+  if (DEBUG) console.debug("[yt-rec-cache] saved %s snapshot with %d items", type, deduped.length);
 }
 
 // ---- Triggering: SPA-aware ------------------------------------------------
@@ -107,6 +172,10 @@ function captureWithRetries() {
   }, 800);
 }
 
+// YouTube dispatches yt-navigate-finish on `document`; depending on the build
+// it may or may not bubble to `window`, so listen on both to be safe.
+document.addEventListener("yt-navigate-finish", captureWithRetries);
 window.addEventListener("yt-navigate-finish", captureWithRetries);
 // Initial load (the very first page, before any SPA navigation)
+if (DEBUG) console.debug("[yt-rec-cache] content script loaded on", location.href);
 captureWithRetries();
