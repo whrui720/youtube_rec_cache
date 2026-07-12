@@ -10,22 +10,27 @@ const STORAGE_KEY = "ytRecSnapshots";
 const DEBUG = true; // logs capture activity to the page console (F12) for troubleshooting
 
 // ---- Scrapers -------------------------------------------------------------
-// Each returns an array of { title, url, channel } or [] if nothing found.
+// Each returns an array of { title, url, channel, isShort } or [] if nothing
+// found.
 //
 // Rather than target YouTube's ever-changing element IDs/classes, we anchor on
 // the one thing that stays stable: recommendation entries are <a> tags whose
-// href points at "/watch?v=...". We pull the title from whatever attribute or
-// child element happens to hold it. This survives most YouTube redesigns.
+// href points at "/watch?v=..." (regular videos) or "/shorts/..." (Shorts). We
+// pull the title from whatever attribute or child element happens to hold it.
+// This survives most YouTube redesigns.
 
 // Read a title from an anchor. Returns { title, clean } where `clean` means it
-// came from a real title element (not a fallback). Every video card has TWO
-// /watch links — a thumbnail link whose only text is the duration overlay or a
-// "50 videos" playlist badge, and the actual title link. We must read from the
-// title-holding elements and ignore the thumbnail's badge text.
+// came from a real title element (not a fallback). Every video/Short card has
+// TWO links to the same target — a thumbnail link whose only text is the
+// duration overlay or a "50 videos" playlist badge, and the actual title link.
+// We must read from the title-holding elements and ignore the thumbnail's badge
+// text.
 function readTitle(a) {
   let title = (
     (a.getAttribute("title") || "").trim() ||
-    (a.querySelector("#video-title, h3, yt-formatted-string")?.textContent || "").trim()
+    (a.querySelector(
+      "#video-title, h3, yt-formatted-string, .shortsLockupViewModelHostMetadataTitle"
+    )?.textContent || "").trim()
   ).replace(/\s+/g, " ");
 
   if (title) {
@@ -42,34 +47,43 @@ function readTitle(a) {
 }
 
 function extractVideoLinks(root) {
-  const byHref = new Map(); // href -> { url, title, channel, clean }
+  const byHref = new Map(); // href -> { url, title, channel, clean, isShort }
 
-  root.querySelectorAll('a[href*="/watch?v="]').forEach((a) => {
-    const href = a.href;
-    if (!href) return;
+  root
+    .querySelectorAll('a[href*="/watch?v="], a[href*="/shorts/"]')
+    .forEach((a) => {
+      const href = a.href;
+      if (!href) return;
 
-    const { title, clean } = readTitle(a);
-    if (!title) return;
+      const isShort = href.includes("/shorts/");
 
-    // Keep the best title we find for each URL: a clean title beats a fallback,
-    // and we don't overwrite an existing clean one.
-    const existing = byHref.get(href);
-    if (existing && (existing.clean || !clean)) return;
+      const { title, clean } = readTitle(a);
+      if (!title) return;
 
-    const card = a.closest(
-      "ytd-rich-item-renderer, yt-lockup-view-model, ytd-compact-video-renderer, ytd-video-renderer"
-    );
-    const channel =
-      card
-        ?.querySelector(
-          "ytd-channel-name #text, .yt-content-metadata-view-model-wiz__metadata-text"
-        )
-        ?.textContent?.trim() || "";
+      // Keep the best title we find for each URL: a clean title beats a
+      // fallback, and we don't overwrite an existing clean one.
+      const existing = byHref.get(href);
+      if (existing && (existing.clean || !clean)) return;
 
-    byHref.set(href, { url: href, title, channel, clean });
-  });
+      const card = a.closest(
+        "ytd-rich-item-renderer, yt-lockup-view-model, ytd-compact-video-renderer, ytd-video-renderer, ytm-shorts-lockup-view-model, ytd-reel-item-renderer"
+      );
+      const channel =
+        card
+          ?.querySelector(
+            "ytd-channel-name #text, .yt-content-metadata-view-model-wiz__metadata-text"
+          )
+          ?.textContent?.trim() || "";
 
-  return [...byHref.values()].map(({ url, title, channel }) => ({ url, title, channel }));
+      byHref.set(href, { url: href, title, channel, clean, isShort });
+    });
+
+  return [...byHref.values()].map(({ url, title, channel, isShort }) => ({
+    url,
+    title,
+    channel,
+    isShort,
+  }));
 }
 
 function scrapeHomeFeed() {
@@ -89,11 +103,25 @@ function scrapeWatchSidebar() {
   return extractVideoLinks(root);
 }
 
-// Title of the video currently playing on a /watch page, used to label the
-// snapshot ("Sidebar: <title>") so you can tell whose recommendations these are.
+// The Shorts player (/shorts/<id>) has no sidebar list; instead it loads a
+// vertical reel of Shorts. Scrape whatever Short/video links the reel has
+// rendered so the "next up" Shorts you were served aren't lost on navigation.
+function scrapeShorts() {
+  const root =
+    document.querySelector("ytd-shorts") ||
+    document.querySelector("#shorts-container") ||
+    document;
+  return extractVideoLinks(root);
+}
+
+// Title of the item currently playing on a /watch or /shorts page, used to
+// label the snapshot ("Sidebar: <title>") so you can tell whose
+// recommendations these are.
 function currentVideoTitle() {
   const el = document.querySelector(
-    "ytd-watch-metadata h1 yt-formatted-string, h1.ytd-watch-metadata, #above-the-fold #title h1"
+    "ytd-watch-metadata h1 yt-formatted-string, h1.ytd-watch-metadata, #above-the-fold #title h1, " +
+      "ytd-reel-video-renderer[is-active] .ytShortsVideoTitleViewModelShortsVideoTitle, " +
+      "ytd-reel-player-header-renderer .title"
   );
   const t = el?.textContent?.trim();
   if (t) return t;
@@ -108,6 +136,7 @@ function detectPageType() {
   const path = location.pathname;
   if (path === "/" || path === "/index") return "home";
   if (path === "/watch") return "watch";
+  if (path.startsWith("/shorts/")) return "shorts";
   return null; // ignore search, channel pages, etc. (extend if you want them)
 }
 
@@ -117,7 +146,12 @@ async function saveSnapshot() {
   const type = detectPageType();
   if (!type) return;
 
-  const items = type === "home" ? scrapeHomeFeed() : scrapeWatchSidebar();
+  const items =
+    type === "home"
+      ? scrapeHomeFeed()
+      : type === "shorts"
+      ? scrapeShorts()
+      : scrapeWatchSidebar();
   if (items.length === 0) {
     if (DEBUG) console.debug("[yt-rec-cache] %s page: 0 items scraped (not ready yet or selectors broken)", type);
     return; // nothing rendered yet; a retry will catch it
@@ -139,7 +173,7 @@ async function saveSnapshot() {
     capturedAt: Date.now(),
     items: deduped,
   };
-  if (type === "watch") snapshot.context = currentVideoTitle();
+  if (type === "watch" || type === "shorts") snapshot.context = currentVideoTitle();
 
   const data = await chrome.storage.local.get(STORAGE_KEY);
   const list = data[STORAGE_KEY] || [];

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube Recommendation Snapshotter",
   "version": "1.0.0",
-  "description": "Caches the recommendation lists (home feed + watch-page sidebar) from the last N YouTube pages you visited, so a 'back' navigation never loses them.",
+  "description": "Caches the recommendation lists (home feed + watch-page sidebar + Shorts) from the last N YouTube pages you visited, so a 'back' navigation never loses them.",
   "permissions": ["storage"],
   "host_permissions": ["https://www.youtube.com/*"],
   "content_scripts": [

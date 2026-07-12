@@ -2,9 +2,10 @@
 
 A minimal Chrome (Manifest V3) extension that keeps a rolling cache of the
 recommendation lists from the **last 10 YouTube pages** you visited — whether
-that's the home feed or the related-videos sidebar on a watch page. When the
-"back" button reshuffles your recommendations, your previous lists are still
-sitting in the popup as plain title + link.
+that's the home feed, the related-videos sidebar on a watch page, or the Shorts
+you were scrolling. When the "back" button reshuffles your recommendations, your
+previous lists are still sitting in the popup as plain title + link. Shorts are
+tagged so you can tell them apart from regular videos.
 
 ## How it works
 
@@ -12,8 +13,10 @@ YouTube is a single-page app, so it does not trigger ordinary page loads when
 you navigate. The content script listens for YouTube's own
 `yt-navigate-finish` event, waits for the feed to render (retrying a few times
 because rendering is asynchronous), then scrapes the visible recommendation
-items straight out of the DOM and stores `{ title, url, channel }` for each.
-Snapshots are kept newest-first and trimmed to the 10 most recent.
+items straight out of the DOM and stores `{ title, url, channel, isShort }` for
+each. It anchors on links pointing at `/watch?v=…` (regular videos) and
+`/shorts/…` (Shorts). Snapshots are kept newest-first and trimmed to the 10 most
+recent.
 
 Data lives in `chrome.storage.local` — nothing leaves your browser.
 
@@ -36,7 +39,7 @@ Data lives in `chrome.storage.local` — nothing leaves your browser.
 ## The fragile part
 
 The scraping selectors in `content.js` (`scrapeHomeFeed` /
-`scrapeWatchSidebar`) target YouTube's current markup. YouTube changes its DOM
+`scrapeWatchSidebar` / `scrapeShorts`) target YouTube's current markup. YouTube changes its DOM
 periodically. If snapshots stop capturing, open DevTools on a YouTube page,
 inspect a recommendation link, and update the selectors. This is expected
 maintenance for any scraper-based YouTube tool.
@@ -61,8 +64,11 @@ isolated in `content.js` so this swap is localized.
 
 ## Limitations
 
-- Captures only `/` (home) and `/watch` (sidebar). Extend `detectPageType()`
-  for search or channel pages.
+- Captures `/` (home), `/watch` (sidebar), and `/shorts/…` (Shorts reel).
+  Extend `detectPageType()` for search or channel pages.
+- On a `/shorts/…` page there is no sidebar recommendation list — YouTube loads
+  a vertical reel — so the Shorts snapshot holds whatever reel items have
+  rendered rather than a full "up next" list.
 - Opening a video in a **new tab** (middle-click) remains the simplest way to
   never lose a feed in the first place; this extension is the safety net for
   when you forget.

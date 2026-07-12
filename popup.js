@@ -36,11 +36,12 @@ function render(snapshots) {
 
     const badge = document.createElement("span");
     badge.className = "badge";
-    badge.textContent = snap.type === "home" ? "Home" : "Sidebar";
+    badge.textContent =
+      snap.type === "home" ? "Home" : snap.type === "shorts" ? "Shorts" : "Sidebar";
     head.appendChild(badge);
 
-    // For sidebar snapshots, show which video these recommendations came from.
-    if (snap.type === "watch" && snap.context) {
+    // For sidebar and Shorts snapshots, show which video these came from.
+    if ((snap.type === "watch" || snap.type === "shorts") && snap.context) {
       const ctx = document.createElement("span");
       ctx.className = "context";
       ctx.textContent = shorten(snap.context, 60);
@@ -64,6 +65,14 @@ function render(snapshots) {
       a.rel = "noopener";
       a.textContent = it.title;
       li.appendChild(a);
+      // Shorts look identical to normal videos here (title + channel), so tag
+      // them so you can tell them apart at a glance.
+      if (it.isShort) {
+        const tag = document.createElement("span");
+        tag.className = "short-tag";
+        tag.textContent = "Short";
+        a.after(tag);
+      }
       if (it.channel) {
         const c = document.createElement("div");
         c.className = "chan";
